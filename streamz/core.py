@@ -1,10 +1,9 @@
 import asyncio
 from collections import deque, defaultdict
 from datetime import timedelta
+from itertools import chain
 import functools
 import logging
-import six
-import sys
 import threading
 from time import time
 from typing import Any, Callable, Hashable, Union
@@ -168,7 +167,7 @@ class APIRegisterMixin(object):
     def register_plugin_entry_point(cls, entry_point, modifier=identity):
         if hasattr(cls, entry_point.name):
             raise ValueError(
-                f"Can't add {entry_point.name} from {entry_point.module_name} "
+                f"Can't add {entry_point.name} "
                 f"to {cls.__name__}: duplicate method name."
             )
 
@@ -178,7 +177,6 @@ class APIRegisterMixin(object):
             if not issubclass(node, Stream):
                 raise TypeError(
                     f"Error loading {entry_point.name} "
-                    f"from module {entry_point.module_name}: "
                     f"{node.__class__.__name__} must be a subclass of Stream"
                 )
             if getattr(cls, entry_point.name).__name__ == "stub":
@@ -379,13 +377,14 @@ class Stream(APIRegisterMixin):
     __repr__ = __str__
 
     def _ipython_display_(self, **kwargs):  # pragma: no cover
+        # Since this function is only called by jupyter, this import must succeed
+        from IPython.display import HTML, display
+
         try:
             import ipywidgets
             from IPython.core.interactiveshell import InteractiveShell
             output = ipywidgets.Output(_view_count=0)
         except ImportError:
-            # since this function is only called by jupyter, this import must succeed
-            from IPython.display import display, HTML
             if hasattr(self, '_repr_html_'):
                 return display(HTML(self._repr_html_()))
             else:
@@ -420,7 +419,11 @@ class Stream(APIRegisterMixin):
 
         output.observe(remove_stream, '_view_count')
 
-        return output._ipython_display_(**kwargs)
+        if hasattr(output, "_repr_mimebundle_"):
+            data = output._repr_mimebundle_(**kwargs)
+            return display(data, raw=True)
+        else:
+            return output._ipython_display_(**kwargs)
 
     def _emit(self, x, metadata=None):
         """
@@ -1468,17 +1471,22 @@ class zip(Stream):
 
     def __init__(self, *upstreams, **kwargs):
         self.maxsize = kwargs.pop('maxsize', 10)
-        self.condition = Condition()
+        self._condition = None
         self.literals = [(i, val) for i, val in enumerate(upstreams)
                          if not isinstance(val, Stream)]
 
         self.buffers = {upstream: deque()
                         for upstream in upstreams
                         if isinstance(upstream, Stream)}
-
         upstreams2 = [upstream for upstream in upstreams if isinstance(upstream, Stream)]
 
         Stream.__init__(self, upstreams=upstreams2, **kwargs)
+
+    @property
+    def condition(self):
+        if self._condition is None:
+            self._condition = Condition()
+        return self._condition
 
     def _add_upstream(self, upstream):
         # Override method to handle setup of buffer for new stream
@@ -1628,15 +1636,20 @@ class flatten(Stream):
     """
     def update(self, x, who=None, metadata=None):
         L = []
-        for i, item in enumerate(x):
-            if i == len(x) - 1:
-                y = self._emit(item, metadata=metadata)
-            else:
-                y = self._emit(item)
+        items = chain(x)
+        item = next(items)
+        for item_next in items:
+            y = self._emit(item)
+            item = item_next
             if type(y) is list:
                 L.extend(y)
             else:
                 L.append(y)
+        y = self._emit(item, metadata=metadata)
+        if type(y) is list:
+            L.extend(y)
+        else:
+            L.append(y)
         return L
 
 
@@ -1876,7 +1889,7 @@ class latest(Stream):
     _graphviz_shape = 'octagon'
 
     def __init__(self, upstream, **kwargs):
-        self.condition = Condition()
+        self._condition = None
         self.next = []
         self.next_metadata = None
 
@@ -1884,6 +1897,12 @@ class latest(Stream):
         Stream.__init__(self, upstream, **kwargs)
 
         self.loop.add_callback(self.cb)
+
+    @property
+    def condition(self):
+        if self._condition is None:
+            self._condition = Condition()
+        return self._condition
 
     def update(self, x, who=None, metadata=None):
         if self.next_metadata:
@@ -1926,8 +1945,8 @@ def sync(loop, func, *args, **kwargs):
             if timeout is not None:
                 future = gen.with_timeout(timedelta(seconds=timeout), future)
             result[0] = yield future
-        except Exception:
-            error[0] = sys.exc_info()
+        except Exception as exc:
+            error[0] = exc
         finally:
             thread_state.asynchronous = False
             e.set()
@@ -1939,7 +1958,8 @@ def sync(loop, func, *args, **kwargs):
     else:
         while not e.is_set():
             e.wait(10)
+
     if error[0]:
-        six.reraise(*error[0])
+        raise error[0]
     else:
         return result[0]

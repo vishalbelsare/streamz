@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 from functools import partial
 import itertools
@@ -12,6 +13,7 @@ import pytest
 
 from tornado.queues import Queue
 from tornado.ioloop import IOLoop
+from tornado import gen
 
 import streamz as sz
 
@@ -19,7 +21,7 @@ from streamz import RefCounter
 from streamz.sources import sink_to_file
 from streamz.utils_test import (inc, double, gen_test, tmpfile, captured_logger,   # noqa: F401
         clean, await_for, metadata, wait_for)  # noqa: F401
-from distributed.utils_test import loop   # noqa: F401
+from distributed.utils_test import loop, loop_in_thread, cleanup   # noqa: F401
 
 
 def test_basic():
@@ -798,13 +800,15 @@ def test_frequencies():
     assert L[-1] == {'a': 2, 'b': 1}
 
 
-def test_flatten():
+@pytest.mark.parametrize("iterators",
+                         [[[1, 2, 3], [4, 5], [6, 7, 8]],
+                          [(i for i in range(1, 7)), (i for i in range(7, 9))]])
+def test_flatten(iterators):
     source = Stream()
     L = source.flatten().sink_to_list()
 
-    source.emit([1, 2, 3])
-    source.emit([4, 5])
-    source.emit([6, 7, 8])
+    for iterator in iterators:
+        source.emit(iterator)
 
     assert L == [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -1485,35 +1489,11 @@ def dont_test_stream_kwargs(clean):  # noqa: F811
     sin.emit(1)
 
 
-@pytest.fixture
-def thread(loop):  # noqa: F811
-    from threading import Thread, Event
-    thread = Thread(target=loop.start)
-    thread.daemon = True
-    thread.start()
-
-    event = Event()
-    loop.add_callback(event.set)
-    event.wait()
-
-    return thread
-
-
 def test_percolate_loop_information(clean):  # noqa: F811
     source = Stream()
     assert not source.loop
     s = source.timed_window(0.5)
     assert source.loop is s.loop
-
-
-def test_separate_thread_without_time(loop, thread):  # noqa: F811
-    assert thread.is_alive()
-    source = Stream(loop=loop)
-    L = source.map(inc).sink_to_list()
-
-    for i in range(10):
-        source.emit(i)
-        assert L[-1] == i + 1
 
 
 def test_separate_thread_with_time(clean):  # noqa: F811

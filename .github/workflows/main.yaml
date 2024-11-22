@@ -13,9 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        CONDA_ENV: [py37, py38]
-    env:
-      STREAMZ_LAUNCH_KAFKA: true
+        CONDA_ENV: [py39, py310, py311, py312]
+    # env:
+      # STREAMZ_LAUNCH_KAFKA: true
 
     steps:
       - name: APT
@@ -45,7 +45,7 @@ jobs:
 
       - name: coveralls
         shell: bash -l {0}
-        if: ${{ matrix.os == 'ubuntu-latest' &&  matrix.CONDA_ENV == 'py38' }}
+        if: ${{ matrix.os == 'ubuntu-latest' &&  matrix.CONDA_ENV == 'py312' }}
         run: coveralls
 
   lint:
